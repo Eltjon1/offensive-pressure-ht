@@ -35,7 +35,13 @@ async def new_context(p):
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding",
             "--disable-extensions",
+            "--disable-sync",
+            "--disable-default-apps",
+            "--no-first-run",
+            "--no-default-browser-check",
         ],
     )
     context = await browser.new_context(
@@ -47,6 +53,12 @@ async def new_context(p):
             "Chrome/126.0.0.0 Mobile Safari/537.36"
         ),
     )
+    async def block_heavy(route):
+        if route.request.resource_type in {"image", "media", "font"}:
+            await route.abort()
+        else:
+            await route.continue_()
+    await context.route("**/*", block_heavy)
     return browser, context
 
 async def scan_single(url):
@@ -54,7 +66,11 @@ async def scan_single(url):
     async with async_playwright() as p:
         browser, context = await new_context(p)
         try:
-            result = await analyse_match(context, url)
+            page = await context.new_page()
+            try:
+                result = await analyse_match(context, url, page=page)
+            finally:
+                await page.close()
             return asdict(result)
         finally:
             await browser.close()
@@ -65,16 +81,13 @@ async def scan_today(job_id, max_matches=50):
         browser, context = await new_context(p)
         try:
             page = await context.new_page()
-            try:
-                urls = (await today_links(page))[:max_matches]
-            finally:
-                await page.close()
+            urls = (await today_links(page))[:max_matches]
 
             set_job(job_id, total=len(urls), done=0, status="running")
             results = []
             for i, url in enumerate(urls, 1):
                 try:
-                    r = await analyse_match(context, url)
+                    r = await analyse_match(context, url, page=page)
                     d = asdict(r)
                 except Exception as e:
                     d = {
@@ -86,6 +99,7 @@ async def scan_today(job_id, max_matches=50):
                 results.append(d)
                 set_job(job_id, done=i, results=results)
             set_job(job_id, status="finished", done=len(urls), results=results)
+            await page.close()
         finally:
             await browser.close()
 
@@ -117,8 +131,8 @@ def api_scan_one():
 @app.post("/api/scan-today")
 def api_scan_today():
     data = request.get_json(silent=True) or {}
-    max_matches = int(data.get("max_matches", 50))
-    max_matches = max(1, min(max_matches, 100))
+    max_matches = int(data.get("max_matches", 12))
+    max_matches = max(1, min(max_matches, 20))
     job_id = uuid.uuid4().hex
     set_job(job_id, status="queued", total=0, done=0, results=[])
     threading.Thread(
