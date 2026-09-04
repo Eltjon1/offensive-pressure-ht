@@ -292,8 +292,7 @@ def db_put(m: TeamMatch):
     con.commit(); con.close()
 
 
-async def team_history(context: BrowserContext, team: str, team_url: str, n=10) -> list[TeamMatch]:
-    page = await context.new_page()
+async def team_history(page: Page, team: str, team_url: str, n=10) -> list[TeamMatch]:
     links = await collect_recent_match_links(page, team_url, limit=max(14,n+4))
     out = []
     for url in links:
@@ -306,7 +305,6 @@ async def team_history(context: BrowserContext, team: str, team_url: str, n=10) 
                 db_put(m); out.append(m)
         if len(out) >= n:
             break
-    await page.close()
     return out
 
 
@@ -349,19 +347,21 @@ def classify(score: float, corners: float) -> tuple[str,str]:
     return "NO BET", "soglie Offensive Pressure HT non raggiunte"
 
 
-async def analyse_match(context: BrowserContext, url: str) -> CandidateResult:
-    page = await context.new_page()
+async def analyse_match(context: BrowserContext, url: str, page: Page | None = None) -> CandidateResult:
+    own_page = page is None
+    if page is None:
+        page = await context.new_page()
     await safe_goto(page,url)
     home, away = await parse_match_header(page)
     team_links = await extract_team_links(page)
     odds = await get_over25_odds(page,url)
 
     if odds is None:
-        await page.close()
+        if own_page: await page.close()
         return CandidateResult(home,away,url,None,0,0,None,None,None,None,None,
                                "CHECK","quota O2,5 non letta automaticamente")
     if not (CONFIG["over25_min"] < odds < CONFIG["over25_max"]):
-        await page.close()
+        if own_page: await page.close()
         return CandidateResult(home,away,url,odds,0,0,None,None,None,None,None,
                                "NO BET","quota O2,5 fuori 1.40–2.00")
 
@@ -377,21 +377,21 @@ async def analyse_match(context: BrowserContext, url: str) -> CandidateResult:
 
     hurl, aurl = best_link(home), best_link(away)
     if not hurl or not aurl:
-        await page.close()
+        if own_page: await page.close()
         return CandidateResult(home,away,url,odds,0,0,None,None,None,None,None,
                                "CHECK","link squadra non trovato")
 
-    hh = await team_history(context,home,hurl,10)
-    ah = await team_history(context,away,aurl,10)
+    hh = await team_history(page,home,hurl,10)
+    ah = await team_history(page,away,aurl,10)
     comp = offensive_components(hh,ah)
     if not comp:
-        await page.close()
+        if own_page: await page.close()
         return CandidateResult(home,away,url,odds,len(hh),len(ah),None,None,None,None,None,
                                "CHECK","meno di 10 precedenti con statistiche complete")
 
     sh,prec,conv,score,corn = comp
     verdict, reason = classify(score,corn)
-    await page.close()
+    if own_page: await page.close()
     return CandidateResult(home,away,url,odds,len(hh),len(ah),sh,prec,conv,score,corn,verdict,reason)
 
 
