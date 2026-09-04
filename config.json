@@ -1,0 +1,17 @@
+{
+  "over25_min": 1.4,
+  "over25_max": 2.0,
+  "database": "flashscore_cache.sqlite3",
+  "calibration": {
+    "_note": "PLACEHOLDER: sostituire con valori ricavati dal nostro dataset storico usando calibrate_thresholds.py",
+    "shots_mean": 24.5,
+    "shots_sd": 4.5,
+    "precision_mean": 35.0,
+    "precision_sd": 5.0,
+    "conversion_target": 30.0,
+    "conv_quality_mean": -6.0,
+    "conv_quality_sd": 4.0,
+    "score_p70": 0.3,
+    "score_p80": 0.55
+  }
+}

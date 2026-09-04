@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: offensive-pressure-ht
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
