@@ -16,6 +16,23 @@ def get_job(jid):
     with _lock:
         return dict(_jobs.get(jid, {}))
 
+def summarize(results):
+    summary={
+        'analysed':len(results),'odds_read':0,'odds_ok':0,'history_complete':0,
+        'strong':0,'standard':0,'no_bet':0,'check':0,'errors':0
+    }
+    for r in results:
+        v=r.get('verdict')
+        if r.get('over25_odds') is not None: summary['odds_read']+=1
+        if r.get('over25_odds') is not None and 1.40 < float(r.get('over25_odds')) < 2.00: summary['odds_ok']+=1
+        if (r.get('home_games') or 0) >= 10 and (r.get('away_games') or 0) >= 10: summary['history_complete']+=1
+        if v=='STRONG': summary['strong']+=1
+        elif v=='STANDARD': summary['standard']+=1
+        elif v=='NO BET': summary['no_bet']+=1
+        elif v=='CHECK': summary['check']+=1
+        elif v=='ERROR': summary['errors']+=1
+    return summary
+
 def run_today_job(jid, max_matches):
     try:
         items = today_matches()[:max_matches]
@@ -31,8 +48,8 @@ def run_today_job(jid, max_matches):
                      'precision_pct':None,'conversion_pct':None,'offensive_score':None,
                      'corners_combined_p4':None,'verdict':'ERROR','reason':str(e)}
             out.append(d)
-            set_job(jid, done=i, results=out)
-        set_job(jid, status='finished', done=len(items), results=out)
+            set_job(jid, done=i, results=out, summary=summarize(out))
+        set_job(jid, status='finished', done=len(items), results=out, summary=summarize(out))
     except Exception as e:
         set_job(jid, status='error', error=str(e))
 
@@ -57,7 +74,7 @@ def scan_one():
 @app.post('/api/scan-today')
 def scan_today():
     data=request.get_json(silent=True) or {}
-    max_matches=max(1,min(int(data.get('max_matches',20)),40))
+    max_matches=max(1,min(int(data.get('max_matches',100)),150))
     jid=uuid.uuid4().hex
     set_job(jid,status='queued',total=0,done=0,results=[])
     threading.Thread(target=run_today_job,args=(jid,max_matches),daemon=True).start()
