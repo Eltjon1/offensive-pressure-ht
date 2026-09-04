@@ -43,7 +43,7 @@
 <body>
 <div class="wrap">
   <h1>⚽ Offensive Pressure HT</h1>
-  <div class="sub">Scanner mobile — STANDARD / STRONG</div>
+  <div class="sub">Scanner mobile v4 HTTP — STANDARD / STRONG</div>
 
   <div class="card">
     <button id="todayBtn">🔎 Scansiona partite di oggi</button>
@@ -105,7 +105,7 @@ $("#oneBtn").onclick=async()=>{
 $("#todayBtn").onclick=async()=>{
   setBusy(true,"Avvio scansione cloud…");
   try{
-    const start=await post("/api/scan-today",{max_matches:12});
+    const start=await post("/api/scan-today",{max_matches:20});
     let done=false;
     while(!done){
       await new Promise(r=>setTimeout(r,2000));
