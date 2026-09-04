@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <title>Offensive Pressure HT</title>
+  <style>
+    :root{
+      --bg:#0b1220;--card:#111827;--muted:#94a3b8;--text:#f8fafc;
+      --line:#243041;--green:#16a34a;--amber:#d97706;--red:#dc2626;--blue:#2563eb;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+    .wrap{max-width:760px;margin:auto;padding:16px}
+    h1{font-size:22px;margin:4px 0 4px}
+    .sub{color:var(--muted);font-size:14px;margin-bottom:16px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin:12px 0}
+    input,button{width:100%;border-radius:12px;border:1px solid var(--line);padding:13px;font-size:16px}
+    input{background:#0f172a;color:#fff;margin-bottom:10px}
+    button{background:var(--blue);color:#fff;font-weight:700;border:none}
+    button.secondary{background:#1f2937}
+    button:disabled{opacity:.55}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .result{border-left:5px solid var(--line)}
+    .STRONG{border-left-color:var(--green)}
+    .STANDARD{border-left-color:var(--amber)}
+    .NO\ BET{border-left-color:var(--red)}
+    .badge{display:inline-block;padding:5px 9px;border-radius:999px;font-size:13px;font-weight:800}
+    .badge.STRONG{background:rgba(22,163,74,.18);color:#86efac}
+    .badge.STANDARD{background:rgba(217,119,6,.18);color:#fdba74}
+    .badge.NO\ BET{background:rgba(220,38,38,.18);color:#fca5a5}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+    .metric{background:#0f172a;border-radius:10px;padding:9px}
+    .metric b{display:block;font-size:17px}
+    .metric span{font-size:12px;color:var(--muted)}
+    .match{font-weight:800;font-size:17px;margin-bottom:7px}
+    .reason{color:var(--muted);font-size:13px;margin-top:8px}
+    .loading{color:#cbd5e1;text-align:center;padding:18px}
+    @media(max-width:460px){.row{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⚽ Offensive Pressure HT</h1>
+  <div class="sub">Scanner mobile — STANDARD / STRONG</div>
+
+  <div class="card">
+    <button id="todayBtn">🔎 Scansiona partite di oggi</button>
+    <div style="height:10px"></div>
+    <input id="url" placeholder="Oppure incolla URL partita Flashscore">
+    <button class="secondary" id="oneBtn">Analizza questa partita</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="results"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = (x,d=2) => (x===null || x===undefined) ? "n/d" : Number(x).toFixed(d);
+
+function card(r){
+  const verdict = r.verdict || "CHECK";
+  return `<div class="card result ${verdict}">
+    <div class="match">${r.home || "?"} — ${r.away || "?"}</div>
+    <span class="badge ${verdict}">${verdict}</span>
+    <div class="grid">
+      <div class="metric"><b>${r.over25_odds ?? "n/d"}</b><span>Quota O2,5</span></div>
+      <div class="metric"><b>${fmt(r.corners_combined_p4)}</b><span>Corner combinati p4</span></div>
+      <div class="metric"><b>${fmt(r.shots_combined_p10)}</b><span>Tiri combinati p10</span></div>
+      <div class="metric"><b>${fmt(r.precision_pct)}%</b><span>Precisione SOT</span></div>
+      <div class="metric"><b>${fmt(r.conversion_pct)}%</b><span>Conversione</span></div>
+      <div class="metric"><b>${fmt(r.offensive_score,3)}</b><span>Indice offensivo</span></div>
+    </div>
+    <div class="reason">${r.reason || ""}</div>
+  </div>`;
+}
+function setBusy(on,msg="Analisi in corso…"){
+  $("#todayBtn").disabled=on; $("#oneBtn").disabled=on;
+  $("#status").innerHTML = on ? `<div class="loading">${msg}</div>` : "";
+}
+async function post(path,data){
+  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});
+  const j=await r.json();
+  if(!r.ok) throw new Error(j.error || "Errore");
+  return j;
+}
+$("#oneBtn").onclick=async()=>{
+  const url=$("#url").value.trim();
+  if(!url) return alert("Incolla l'URL della partita Flashscore.");
+  setBusy(true,"Sto analizzando la partita…");
+  try{
+    const r=await post("/api/scan-one",{url});
+    $("#results").innerHTML=card(r);
+  }catch(e){ $("#results").innerHTML=`<div class="card">${e.message}</div>`}
+  setBusy(false);
+};
+$("#todayBtn").onclick=async()=>{
+  setBusy(true,"Avvio scansione cloud…");
+  try{
+    const start=await post("/api/scan-today",{max_matches:50});
+    let done=false;
+    while(!done){
+      await new Promise(r=>setTimeout(r,2000));
+      const res=await fetch(`/api/job/${start.job_id}`);
+      const j=await res.json();
+      if(!res.ok) throw new Error(j.error||"Errore");
+      const total=j.total||0, n=j.done||0;
+      $("#status").innerHTML=`<div class="loading">Scansione ${n}/${total || "…"} — puoi lasciare aperta questa pagina</div>`;
+      if(j.status==="error") throw new Error(j.error||"Errore scanner");
+      if(j.status==="finished"){
+        done=true;
+        const ranked=(j.results||[]).sort((a,b)=>{
+          const rank={STRONG:0,STANDARD:1,"NO BET":2,CHECK:3,ERROR:4};
+          return (rank[a.verdict]??9)-(rank[b.verdict]??9);
+        });
+        const picks=ranked.filter(x=>x.verdict==="STRONG" || x.verdict==="STANDARD");
+        $("#results").innerHTML=picks.length
+          ? `<div class="sub">${picks.length} selezioni trovate</div>`+picks.map(card).join("")
+          : `<div class="card">Nessuna selezione STANDARD/STRONG trovata.</div>`;
+      }
+    }
+  }catch(e){ $("#results").innerHTML=`<div class="card">${e.message}</div>`}
+  setBusy(false);
+};
+</script>
+</body>
+  </html>
