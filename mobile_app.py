@@ -40,13 +40,13 @@ def run_today_job(jid, max_matches):
         out=[]
         for i, m in enumerate(items,1):
             try:
-                r = analyse_match(m.get('url') or m.get('id'), feed_match=m)
+                r = analyse_match(m.get('url') or m.get('id'), feed_match=m, force_history=(i<=3))
                 d = asdict(r)
             except Exception as e:
                 d = {'home':m.get('home','?'),'away':m.get('away','?'),'match_url':m.get('url',''),
                      'over25_odds':None,'home_games':0,'away_games':0,'shots_combined_p10':None,
                      'precision_pct':None,'conversion_pct':None,'offensive_score':None,
-                     'corners_combined_p4':None,'verdict':'ERROR','reason':str(e)}
+                     'corners_combined_p4':None,'verdict':'ERROR','reason':str(e),'probe_status':None,'probe_type':None,'probe_preview':None}
             out.append(d)
             set_job(jid, done=i, results=out, summary=summarize(out))
         set_job(jid, status='finished', done=len(items), results=out, summary=summarize(out))
@@ -58,7 +58,7 @@ def index(): return render_template('index.html')
 
 @app.get('/health')
 def health():
-    return jsonify({'ok':True,'service':'offensive-pressure-ht','engine':'http-v4'})
+    return jsonify({'ok':True,'service':'offensive-pressure-ht','engine':'http-v4.3-probe'})
 
 @app.post('/api/scan-one')
 def scan_one():

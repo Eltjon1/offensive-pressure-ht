@@ -24,6 +24,7 @@ class CandidateResult:
     home:str; away:str; match_url:str; over25_odds:float|None; home_games:int; away_games:int
     shots_combined_p10:float|None; precision_pct:float|None; conversion_pct:float|None
     offensive_score:float|None; corners_combined_p4:float|None; verdict:str; reason:str
+    probe_status:int|None=None; probe_type:str|None=None; probe_preview:str|None=None
 
 def init_db():
     con=sqlite3.connect(DB_PATH)
@@ -162,6 +163,36 @@ def over25_odds(mid):
         except Exception: continue
     return None
 
+
+def odds_probe(mid):
+    """Small diagnostic snapshot of what Render receives from the odds endpoint."""
+    attempts=[('oce','IT'),('oce','GB'),('ope','IT'),('ope','GB')]
+    rows=[]
+    for qhash,geo in attempts:
+        params={'_hash':qhash,'eventId':mid,'projectId':'2','geoIpCode':geo}
+        try:
+            r=S.get(ODDS,params=params,timeout=12)
+            ctype=(r.headers.get('content-type') or '')[:120]
+            text=(r.text or '')[:900].replace('\n',' ').replace('\r',' ')
+            rows.append({'hash':qhash,'geo':geo,'status':r.status_code,'type':ctype,'preview':text})
+        except Exception as e:
+            rows.append({'hash':qhash,'geo':geo,'status':None,'type':'ERROR','preview':str(e)[:500]})
+    return rows
+
+def _probe_summary(rows):
+    if not rows:
+        return None,None,None
+    first=rows[0]
+    compact=' | '.join(
+        f"{x.get('hash')}/{x.get('geo')}:{x.get('status')} {x.get('type','')}"
+        for x in rows
+    )
+    previews=' || '.join(
+        f"{x.get('hash')}/{x.get('geo')}={x.get('preview','')[:260]}"
+        for x in rows
+    )
+    return first.get('status'), compact[:500], previews[:1100]
+
 def offensive_components(h,a):
     if len(h)<10 or len(a)<10:return None
     allm=h[:10]+a[:10]; shots=statistics.mean(x.shots for x in h[:10])+statistics.mean(x.shots for x in a[:10])
@@ -177,15 +208,53 @@ def classify(score,corners):
     if score>=cal['score_p70'] and corners>=10:return 'STANDARD','indice p10 Top 30% + corner p4 ≥10'
     return 'NO BET','soglie Offensive Pressure HT non raggiunte'
 
-def analyse_match(url_or_id,feed_match=None):
-    init_db(); mid=match_id(url_or_id) if len(url_or_id)!=8 else url_or_id
-    meta=feed_match or current_meta(mid); home,away=meta.get('home','HOME'),meta.get('away','AWAY'); url=meta.get('url') or f'https://www.flashscore.com/match/{mid}/'
+def analyse_match(url_or_id,feed_match=None,force_history=False):
+    init_db()
+    mid=match_id(url_or_id) if len(url_or_id)!=8 else url_or_id
+    meta=feed_match or current_meta(mid)
+    home,away=meta.get('home','HOME'),meta.get('away','AWAY')
+    url=meta.get('url') or f'https://www.flashscore.com/match/{mid}/'
+
     odds=over25_odds(mid)
-    if odds is None:return CandidateResult(home,away,url,None,0,0,None,None,None,None,None,'CHECK','quota O2,5 non letta dal feed HTTP')
-    if not (CONFIG['over25_min']<odds<CONFIG['over25_max']):return CandidateResult(home,away,url,odds,0,0,None,None,None,None,None,'NO BET','quota O2,5 fuori fascia 1.40–2.00')
-    hist=h2h_matches(mid); hh=history_for(home,hist,10); ah=history_for(away,hist,10); comp=offensive_components(hh,ah)
-    if not comp:return CandidateResult(home,away,url,odds,len(hh),len(ah),None,None,None,None,None,'CHECK',f'storico insufficiente: {len(hh)}/10 e {len(ah)}/10')
-    shots,prec,conv,score,corners=comp; verdict,reason=classify(score,corners)
-    return CandidateResult(home,away,url,odds,len(hh),len(ah),round(shots,2),round(prec,2),round(conv,2),round(score,3),round(corners,2),verdict,reason)
+    probe_rows = odds_probe(mid) if (force_history or odds is None) else []
+    p_status,p_type,p_preview=_probe_summary(probe_rows)
+
+    # Normal path: no odds => CHECK. For first diagnostic matches we keep going
+    # to test H2H + stats independently from odds.
+    if odds is None and not force_history:
+        return CandidateResult(home,away,url,None,0,0,None,None,None,None,None,
+                               'CHECK','quota O2,5 non letta dal feed HTTP',
+                               p_status,p_type,p_preview)
+
+    if odds is not None and not (CONFIG['over25_min']<odds<CONFIG['over25_max']):
+        return CandidateResult(home,away,url,odds,0,0,None,None,None,None,None,
+                               'NO BET','quota O2,5 fuori fascia 1.40–2.00',
+                               p_status,p_type,p_preview)
+
+    # Diagnostic path can reach here even with odds=None.
+    hist=h2h_matches(mid)
+    hh=history_for(home,hist,10)
+    ah=history_for(away,hist,10)
+    comp=offensive_components(hh,ah)
+
+    if not comp:
+        prefix='DIAGNOSTICA: quota assente; ' if odds is None else ''
+        return CandidateResult(home,away,url,odds,len(hh),len(ah),None,None,None,None,None,
+                               'CHECK',prefix+f'storico raccolto: {len(hh)}/10 e {len(ah)}/10',
+                               p_status,p_type,p_preview)
+
+    shots,prec,conv,score,corners=comp
+    if odds is None:
+        return CandidateResult(home,away,url,None,len(hh),len(ah),
+                               round(shots,2),round(prec,2),round(conv,2),
+                               round(score,3),round(corners,2),'CHECK',
+                               'DIAGNOSTICA: storico/statistiche OK; manca solo la quota O2,5',
+                               p_status,p_type,p_preview)
+
+    verdict,reason=classify(score,corners)
+    return CandidateResult(home,away,url,odds,len(hh),len(ah),
+                           round(shots,2),round(prec,2),round(conv,2),
+                           round(score,3),round(corners,2),verdict,reason,
+                           p_status,p_type,p_preview)
 
 if __name__=='__main__': print(f'{len(today_matches())} partite nel feed di oggi')
