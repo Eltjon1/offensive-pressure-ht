@@ -1,154 +1,72 @@
-
 #!/usr/bin/env python3
-import asyncio
-import os
-import socket
-import threading
-import uuid
+import os, threading, uuid
 from dataclasses import asdict
-from pathlib import Path
-
 from flask import Flask, render_template, request, jsonify
-from scanner import init_db, analyse_match, today_links
-from playwright.async_api import async_playwright
+from scanner import init_db, analyse_match, today_matches
 
-ROOT = Path(__file__).resolve().parent
 app = Flask(__name__)
-
 _jobs = {}
-_jobs_lock = threading.Lock()
+_lock = threading.Lock()
 
-def set_job(job_id, **kwargs):
-    with _jobs_lock:
-        _jobs.setdefault(job_id, {})
-        _jobs[job_id].update(kwargs)
+def set_job(jid, **kw):
+    with _lock:
+        _jobs.setdefault(jid, {}).update(kw)
 
-def get_job(job_id):
-    with _jobs_lock:
-        return dict(_jobs.get(job_id, {}))
+def get_job(jid):
+    with _lock:
+        return dict(_jobs.get(jid, {}))
 
-async def new_context(p):
-    browser = await p.chromium.launch(
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-background-networking",
-            "--disable-background-timer-throttling",
-            "--disable-renderer-backgrounding",
-            "--disable-extensions",
-            "--disable-sync",
-            "--disable-default-apps",
-            "--no-first-run",
-            "--no-default-browser-check",
-        ],
-    )
-    context = await browser.new_context(
-        locale="en-US",
-        timezone_id="Europe/Rome",
-        viewport={"width": 1280, "height": 900},
-        user_agent=(
-            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
-            "Chrome/126.0.0.0 Mobile Safari/537.36"
-        ),
-    )
-    async def block_heavy(route):
-        if route.request.resource_type in {"image", "media", "font"}:
-            await route.abort()
-        else:
-            await route.continue_()
-    await context.route("**/*", block_heavy)
-    return browser, context
-
-async def scan_single(url):
-    init_db()
-    async with async_playwright() as p:
-        browser, context = await new_context(p)
-        try:
-            page = await context.new_page()
+def run_today_job(jid, max_matches):
+    try:
+        items = today_matches()[:max_matches]
+        set_job(jid, status='running', total=len(items), done=0, results=[])
+        out=[]
+        for i, m in enumerate(items,1):
             try:
-                result = await analyse_match(context, url, page=page)
-            finally:
-                await page.close()
-            return asdict(result)
-        finally:
-            await browser.close()
-
-async def scan_today(job_id, max_matches=50):
-    init_db()
-    async with async_playwright() as p:
-        browser, context = await new_context(p)
-        try:
-            page = await context.new_page()
-            urls = (await today_links(page))[:max_matches]
-
-            set_job(job_id, total=len(urls), done=0, status="running")
-            results = []
-            for i, url in enumerate(urls, 1):
-                try:
-                    r = await analyse_match(context, url, page=page)
-                    d = asdict(r)
-                except Exception as e:
-                    d = {
-                        "home":"?", "away":"?", "match_url":url, "over25_odds":None,
-                        "home_games":0, "away_games":0, "shots_combined_p10":None,
-                        "precision_pct":None, "conversion_pct":None, "offensive_score":None,
-                        "corners_combined_p4":None, "verdict":"ERROR", "reason":str(e)
-                    }
-                results.append(d)
-                set_job(job_id, done=i, results=results)
-            set_job(job_id, status="finished", done=len(urls), results=results)
-            await page.close()
-        finally:
-            await browser.close()
-
-def run_today_job(job_id, max_matches):
-    try:
-        asyncio.run(scan_today(job_id, max_matches=max_matches))
+                r = analyse_match(m.get('url') or m.get('id'), feed_match=m)
+                d = asdict(r)
+            except Exception as e:
+                d = {'home':m.get('home','?'),'away':m.get('away','?'),'match_url':m.get('url',''),
+                     'over25_odds':None,'home_games':0,'away_games':0,'shots_combined_p10':None,
+                     'precision_pct':None,'conversion_pct':None,'offensive_score':None,
+                     'corners_combined_p4':None,'verdict':'ERROR','reason':str(e)}
+            out.append(d)
+            set_job(jid, done=i, results=out)
+        set_job(jid, status='finished', done=len(items), results=out)
     except Exception as e:
-        set_job(job_id, status="error", error=str(e))
+        set_job(jid, status='error', error=str(e))
 
-@app.get("/")
-def index():
-    return render_template("index.html")
+@app.get('/')
+def index(): return render_template('index.html')
 
-@app.get("/health")
+@app.get('/health')
 def health():
-    return jsonify({"ok": True, "service": "offensive-pressure-ht"})
+    return jsonify({'ok':True,'service':'offensive-pressure-ht','engine':'http-v4'})
 
-@app.post("/api/scan-one")
-def api_scan_one():
-    data = request.get_json(silent=True) or {}
-    url = (data.get("url") or "").strip()
-    if "flashscore" not in url.lower():
-        return jsonify({"error":"Inserisci un URL partita Flashscore valido."}), 400
+@app.post('/api/scan-one')
+def scan_one():
+    data=request.get_json(silent=True) or {}
+    url=(data.get('url') or '').strip()
+    if not url:
+        return jsonify({'error':'Inserisci un URL partita Flashscore valido.'}),400
     try:
-        return jsonify(asyncio.run(scan_single(url)))
+        return jsonify(asdict(analyse_match(url)))
     except Exception as e:
-        return jsonify({"error":str(e)}), 500
+        return jsonify({'error':str(e)}),500
 
-@app.post("/api/scan-today")
-def api_scan_today():
-    data = request.get_json(silent=True) or {}
-    max_matches = int(data.get("max_matches", 12))
-    max_matches = max(1, min(max_matches, 20))
-    job_id = uuid.uuid4().hex
-    set_job(job_id, status="queued", total=0, done=0, results=[])
-    threading.Thread(
-        target=run_today_job,
-        args=(job_id, max_matches),
-        daemon=True
-    ).start()
-    return jsonify({"job_id": job_id})
+@app.post('/api/scan-today')
+def scan_today():
+    data=request.get_json(silent=True) or {}
+    max_matches=max(1,min(int(data.get('max_matches',20)),40))
+    jid=uuid.uuid4().hex
+    set_job(jid,status='queued',total=0,done=0,results=[])
+    threading.Thread(target=run_today_job,args=(jid,max_matches),daemon=True).start()
+    return jsonify({'job_id':jid})
 
-@app.get("/api/job/<job_id>")
-def api_job(job_id):
-    job = get_job(job_id)
-    if not job:
-        return jsonify({"error":"Job non trovato"}), 404
-    return jsonify(job)
+@app.get('/api/job/<jid>')
+def job(jid):
+    j=get_job(jid)
+    return (jsonify(j),200) if j else (jsonify({'error':'Job non trovato'}),404)
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5050"))
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+if __name__=='__main__':
+    app.run(host='0.0.0.0',port=int(os.environ.get('PORT','5050')),threaded=True)
